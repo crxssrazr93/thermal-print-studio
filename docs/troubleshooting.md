@@ -20,6 +20,34 @@ one, **How to talk to it**: halve **Bytes per write** and raise **Pause between
 writes** until it holds. Failing that, it is being fed by something else at the
 same time, or the battery is low enough that the head is browning out.
 
+## It says this Python was built without Bluetooth support
+
+`AF_BLUETOOTH` is a compile-time option in CPython's socket module, and the
+standalone interpreters that uv and pyenv download are built without it. USB and
+CUPS still work; Bluetooth cannot, because there is no way to open an RFCOMM
+socket.
+
+Reinstall against a Python that has it, which on most systems is the packaged
+one:
+
+```bash
+uv tool install --force --editable --python /usr/bin/python3 ~/Apps/thermal-printer
+systemctl --user restart thermal-print-studio
+```
+
+`install.sh` now picks such an interpreter itself. To check any Python:
+
+```bash
+python3 -c 'import socket; print(hasattr(socket, "AF_BLUETOOTH"))'
+```
+
+## The desktop Bluetooth applet says it cannot connect
+
+It is right, and it does not matter. These printers offer only the serial port
+profile, which the desktop has no handler for, so its Connect button fails while
+the app connects perfectly well: the app opens the RFCOMM socket itself. Pair
+the printer in the applet, then leave the connecting to the app.
+
 ## Permission denied on USB
 
 Your user needs to be in the group that owns the device node:

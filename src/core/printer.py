@@ -61,6 +61,19 @@ class BluetoothDevice:
         return cls(mac_address=mac, name=name, is_printer=is_printer)
 
 
+# Bluetooth is a compile-time option in CPython's socket module, and the
+# standalone builds that uv and pyenv hand out are built without it. The failure
+# then arrives as a bare AttributeError deep in a connect, which says nothing
+# about what is actually wrong, so it is checked once here and said plainly.
+BLUETOOTH_AVAILABLE = hasattr(socket, "AF_BLUETOOTH")
+
+NO_BLUETOOTH_MESSAGE = (
+    "This Python was built without Bluetooth support, so it cannot open an "
+    "RFCOMM socket. Reinstall against a Python that has it, usually the "
+    "system one: uv tool install --force --editable --python /usr/bin/python3 ."
+)
+
+
 class PrinterConnection:
     RFCOMM_CHANNEL = 1
     SPP_UUID = "00001101-0000-1000-8000-00805f9b34fb"
@@ -204,6 +217,10 @@ class PrinterConnection:
             if discovered is not None:
                 channel = discovered
                 self._discovered_channel = discovered
+
+        if not BLUETOOTH_AVAILABLE:
+            self._set_state(ConnectionState.ERROR)
+            raise ConnectionError(NO_BLUETOOTH_MESSAGE)
 
         try:
             self._socket = socket.socket(
