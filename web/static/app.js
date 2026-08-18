@@ -767,7 +767,10 @@ async function uploadAndInsert(file) {
       reader.readAsDataURL(file);
     });
     const result = await api('/api/images', { method: 'POST', body: JSON.stringify({ data }) });
-    tt.chain().focus().setImage({ src: result.url, alt: file.name }).run();
+    // No alt text: a file name is not a description, and the renderer prints
+    // the alt when a picture cannot be loaded, so "IMG_2231.jpeg" would end up
+    // on the paper. Anyone who wants a caption can type one.
+    tt.chain().focus().setImage({ src: result.url, alt: '' }).run();
     schedulePreview();
   } catch (error) {
     toast(`Could not add that image: ${error.message}`, true);

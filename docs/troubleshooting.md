@@ -90,6 +90,15 @@ from PIL import features; print(features.check('raqm'))
 
 If that says False, install `libraqm` and reinstall Pillow.
 
+## A picture prints as its own markdown
+
+Text pasted from a web page, particularly an Arabic or Hebrew one, carries
+invisible direction marks. One of those landing inside `![alt](path)` used to
+stop it being an image at all, so the markup printed as words, scrambled by the
+bidi algorithm into something unrecognisable. The marks are tolerated now. If
+you still see markup on the paper, read the line in **Raw** mode: the path is
+probably wrong.
+
 ## Pictures print as pages of characters
 
 The firmware does not know `GS v 0`, the raster command. Settings, Add a

@@ -79,8 +79,23 @@ _INLINE_CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"(?<!\w)(?:\*\*|__)(.+?)(?:\*\*|__)(?!\w)")
 _ITALIC = re.compile(r"(?<![\w\*_])(?:\*|_)([^\*_\s][^\*_]*?)(?:\*|_)(?![\w\*_])")
 _STRIKE = re.compile(r"~~(.+?)~~")
-_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# Text pasted from a web page, particularly an Arabic or Hebrew one, carries
+# invisible direction marks: left to right and right to left marks, isolates,
+# embeddings. They are characters like any other as far as a regular expression
+# is concerned, so one landing between the "!" and the "[" of an image is enough
+# to stop it being an image at all, and the markdown prints as text. They are
+# tolerated inside the syntax here and stripped out of what is captured.
+_BIDI_MARKS = "\u200e\u200f\u061c\u2066\u2067\u2068\u2069\u202a-\u202e"
+_BIDI = re.compile(f"[{_BIDI_MARKS}]")
+_GAP = f"[{_BIDI_MARKS}]*"
+
+_LINK = re.compile(rf"{_GAP}\[([^\]]+)\]{_GAP}\({_GAP}([^)]+)\)")
+_IMAGE = re.compile(rf"!{_GAP}\[([^\]]*)\]{_GAP}\({_GAP}([^)]+)\)")
+
+
+def strip_bidi(text: str) -> str:
+    """Drop the invisible direction marks. For paths and syntax, never prose."""
+    return _BIDI.sub("", text or "")
 _TABLE_DIRECTIVE = re.compile(r"<!--\s*table\s+(.*?)\s*-->")
 
 # Arabic, Hebrew, Syriac, Thaana and the Arabic supplements. Enough to decide
@@ -115,15 +130,32 @@ def _parse_shares(value: str) -> List[int]:
     return shares if shares and all(share > 0 for share in shares) else []
 
 
+_FILENAME = re.compile(
+    r"^[\w .()\[\]-]{1,64}\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif|heic)$",
+    re.IGNORECASE,
+)
+
+
+def _image_label(alt: str) -> str:
+    alt = strip_bidi(alt or "").strip()
+    return "[image]" if not alt or _looks_like_filename(alt) else f"[{alt}]"
+
+
+def _looks_like_filename(text: str) -> bool:
+    """True for "photo 3.png" and the like: a name, not a description."""
+    return bool(_FILENAME.match(text.strip()))
+
+
 def _split_image_target(target: str) -> Tuple[str, str]:
     """Separate a source from markdown's optional title.
 
     The title is where a per-image choice lives: ![alt](path "atkinson"), which
     stays valid markdown and is ignored by anything that does not care.
     """
-    match = re.match(r'^(?P<src>\S+)(?:\s+"(?P<title>[^"]*)")?$', target.strip())
+    target = strip_bidi(target).strip()
+    match = re.match(r'^(?P<src>\S+)(?:\s+"(?P<title>[^"]*)")?$', target)
     if not match:
-        return target.strip(), ""
+        return target, ""
     return match.group("src"), (match.group("title") or "").strip()
 
 
@@ -348,16 +380,15 @@ class MarkdownRenderer:
                 pending_directive = {}
                 continue
 
-            # an image on its own line is a block, not a note inside a line
-            standalone_image = _IMAGE.fullmatch(stripped)
-            if standalone_image:
-                source, title = _split_image_target(standalone_image.group(2))
-                blocks.append(Block(
-                    kind="image",
-                    lines=[source],
-                    spans=[Span(standalone_image.group(1))],
-                    borders=title,          # the per-image dither, if it named one
-                ))
+            # A picture is a block whatever else shares its line. Markdown calls
+            # an image inline, but a thermal page is one column wide and there
+            # is nowhere for a picture to sit beside a sentence, so a line that
+            # holds one is split: the words before it, the picture, the words
+            # after. Typing a picture into the middle of a paragraph is how
+            # anyone actually inserts one, and it used to print as its own
+            # markup.
+            if _IMAGE.search(stripped):
+                blocks.extend(self._split_around_images(stripped))
                 i += 1
                 continue
 
@@ -420,13 +451,38 @@ class MarkdownRenderer:
 
         return blocks
 
+    def _split_around_images(self, line: str) -> List[Block]:
+        """One line holding a picture becomes text, picture, text."""
+        blocks: List[Block] = []
+        position = 0
+        for match in _IMAGE.finditer(line):
+            before = line[position:match.start()].strip()
+            if before:
+                blocks.append(Block(kind="paragraph", spans=self._parse_inline(before)))
+            source, title = _split_image_target(match.group(2))
+            blocks.append(Block(
+                kind="image",
+                lines=[source],
+                spans=[Span(strip_bidi(match.group(1)))],
+                borders=title,              # the per-image dither, if it named one
+            ))
+            position = match.end()
+
+        rest = line[position:].strip()
+        if rest:
+            blocks.append(Block(kind="paragraph", spans=self._parse_inline(rest)))
+        return blocks
+
     def _parse_inline(self, text: str) -> List[Span]:
         """Flatten inline markup into styled spans.
 
         Links become "text (url)" because a printed page cannot be clicked, and
         dropping the target would lose information the reader needs.
         """
-        text = _IMAGE.sub(lambda m: f"[image: {m.group(1) or m.group(2)}]", text)
+        # Images are lifted out into blocks before this runs, so anything left
+        # here is a picture that could not be one: name it plainly, and never
+        # with its path.
+        text = _IMAGE.sub(lambda m: _image_label(m.group(1)), text)
         text = _LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
         text = _STRIKE.sub(lambda m: "".join(c + "̶" for c in m.group(1)), text)
 
@@ -936,8 +992,14 @@ class MarkdownRenderer:
         picture = self._load_image(source)
         if picture is None:
             font = self._font(self.font_size, italic=True)
-            label = (block.spans[0].text if block.spans else "") or source
-            ImageDraw.Draw(sheet).text((left, y), f"[image: {label}]", font=font, fill="black")
+            # The alt text is what the author wrote about the picture, and is
+            # worth printing. A file name is not: it is an accident of where
+            # the picture came from, and "b86d875052f404bb.png" on the paper
+            # helps nobody, so a label that is only a file name is dropped.
+            label = (block.spans[0].text if block.spans else "").strip()
+            if not label or _looks_like_filename(label):
+                label = "image"
+            ImageDraw.Draw(sheet).text((left, y), f"[{label}]", font=font, fill="black")
             return y + self._line_height(font)
 
         available = width - left - self.margin

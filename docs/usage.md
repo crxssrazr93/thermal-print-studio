@@ -69,8 +69,18 @@ and the preview is the honest answer.
 The Image button uploads the file to the server, which stores it by content
 hash under `~/.local/share/thermal-printer/images/` and hands back a reference
 the document carries as ordinary markdown. At print time the renderer scales it
-to the paper and screens it into dots, since a thermal head has one colour. An
-image that cannot be loaded prints its alt text rather than leaving a hole.
+to the paper and screens it into dots, since a thermal head has one colour.
+
+A picture is a block whatever else shares its line. Markdown calls an image
+inline, but a receipt is one column wide and there is nowhere for a picture to
+sit beside a sentence, so a line holding one is split: the words before it, the
+picture, the words after. Dropping an image into the middle of a paragraph is
+how anyone actually inserts one.
+
+An image that cannot be loaded prints its alt text rather than leaving a hole,
+and no alt text is written for you: a file name is not a description, and
+`IMG_2231.jpeg` on the paper helps nobody. Type a caption in the alt slot if
+you want one printed in that case.
 
 Eleven screening methods are available. The diffusion kernels come from
 dither-me-this, which states each one as offsets and factors over a common
