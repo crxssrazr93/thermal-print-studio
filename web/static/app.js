@@ -1871,7 +1871,6 @@ async function loadFonts(force = false) {
  * The browser's own datalist was the obvious shortcut and the wrong one: it
  * cannot be styled, it draws its own clear button and caret, and it places
  * itself wherever it likes. */
-const FONT_LIMIT = 300;       // rows rendered at once; the search is the rest
 
 let fontOpenFor = null;       // the field the panel is open against
 let fontPicked = null;        // what to call when a name is chosen
@@ -1898,7 +1897,8 @@ function renderFontList(query) {
   if (!list) return;
 
   const matches = fontMatches(query);
-  const shown = matches.slice(0, FONT_LIMIT);
+  // every match, all the way to Z: nine hundred rows is nothing to a browser
+  const shown = matches;
   const current = fontOpenFor ? fontOpenFor.dataset.font : '';
   list.innerHTML = '';
 
@@ -1923,8 +1923,8 @@ function renderFontList(query) {
   }
 
   if (foot) {
-    foot.hidden = matches.length <= FONT_LIMIT;
-    foot.textContent = `${matches.length} families, showing ${shown.length}. Keep typing to narrow it.`;
+    foot.hidden = !query.trim();
+    foot.textContent = `${matches.length} of ${fontList.length} families`;
   }
 
   fontActive = shown.indexOf(current);

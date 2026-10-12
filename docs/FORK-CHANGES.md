@@ -237,7 +237,7 @@ and a style applied to a word with its trailing space no longer glues the
 closing marker to the next word.
 
 The font control is a dropdown with a search box over every installed family,
-sorted A to Z and rescanned at launch. Closed and focused, the arrow keys step
+sorted A to Z, scrollable to the end, and rescanned at launch. Closed and focused, the arrow keys step
 through the fonts and the page follows; typing a letter opens it searching for
 that letter.
 
