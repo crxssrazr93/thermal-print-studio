@@ -442,17 +442,25 @@ function inlineToMd(node) {
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
   const inner = Array.from(node.childNodes).map(inlineToMd).join('');
+  // Spaces stay outside the markers. A word selected with its trailing space
+  // comes out of the editor as "<strong>bold </strong>next", and "**bold**next"
+  // is not bold to any reader: the closing marker has to meet a word boundary.
+  const mark = (open, close = open) => {
+    const core = inner.trim();
+    if (!core) return inner;
+    return `${inner.match(/^\s*/)[0]}${open}${core}${close}${inner.match(/\s*$/)[0]}`;
+  };
   switch (node.nodeName) {
     case 'BR': return '\n';
-    case 'STRONG': case 'B': return inner.trim() ? `**${inner.trim()}**` : '';
-    case 'EM': case 'I': return inner.trim() ? `*${inner.trim()}*` : '';
-    case 'DEL': case 'S': case 'STRIKE': return inner.trim() ? `~~${inner.trim()}~~` : '';
+    case 'STRONG': case 'B': return mark('**');
+    case 'EM': case 'I': return mark('*');
+    case 'DEL': case 'S': case 'STRIKE': return mark('~~');
     // markdown proper has none of these; these are the spellings the wider
     // ecosystem settled on, and the renderer understands the same ones
-    case 'MARK': return inner.trim() ? `==${inner.trim()}==` : '';
-    case 'U': return inner.trim() ? `++${inner.trim()}++` : '';
-    case 'SUP': return inner.trim() ? `^${inner.trim()}^` : '';
-    case 'SUB': return inner.trim() ? `~${inner.trim()}~` : '';
+    case 'MARK': return mark('==');
+    case 'U': return mark('++');
+    case 'SUP': return mark('^');
+    case 'SUB': return mark('~');
     case 'CODE': return inner.trim() ? `\`${inner.trim()}\`` : '';
     case 'A': return `[${inner}](${node.getAttribute('href') || ''})`;
     default: return inner;
@@ -770,7 +778,13 @@ async function uploadAndInsert(file) {
     // No alt text: a file name is not a description, and the renderer prints
     // the alt when a picture cannot be loaded, so "IMG_2231.jpeg" would end up
     // on the paper. Anyone who wants a caption can type one.
-    tt.chain().focus().setImage({ src: result.url, alt: '' }).run();
+    // in the markdown source the picture goes in as text: the rich editor is
+    // hidden then, and whatever went into it would be lost on the way back
+    if (isRendered() || !tt) {
+      tt.chain().focus().setImage({ src: result.url, alt: '' }).run();
+    } else {
+      insertBlock(`![](${result.url})`);
+    }
     schedulePreview();
   } catch (error) {
     toast(`Could not add that image: ${error.message}`, true);
@@ -1538,9 +1552,9 @@ function insertTable() {
   insertBlock(formatTable([['Item', 'Qty'], null, ['tea', '2'], ['jam', '1']]));
 }
 
-const BLOCK_MARKER = /^(#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/;
+const BLOCK_MARKER = /^(#{1,6}\s+|>\s*|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/;
 
-function prefixLines(marker, numbered = false) {
+function prefixLines(marker, numbered = false, already = null) {
   const el = editor();
   const value = el.value;
   const startLine = value.lastIndexOf('\n', el.selectionStart - 1) + 1;
@@ -1549,11 +1563,14 @@ function prefixLines(marker, numbered = false) {
 
   const lines = value.slice(startLine, endLine).split('\n');
   // reapplying the same marker removes it, so one button toggles a list
-  const allMarked = lines.every((line, i) => line.startsWith(numbered ? `${i + 1}. ` : marker));
+  // (a checklist counts as marked whether its boxes are ticked or not)
+  const isMarked = (line, i) => (already
+    ? already.test(line) : line.startsWith(numbered ? `${i + 1}. ` : marker));
+  const allMarked = lines.every(isMarked);
 
   const next = lines.map((line, i) => {
     const applied = numbered ? `${i + 1}. ` : marker;
-    if (allMarked) return line.slice(applied.length);
+    if (allMarked) return already ? line.replace(already, '') : line.slice(applied.length);
     return applied + line.replace(BLOCK_MARKER, '');
   }).join('\n');
 
@@ -1581,11 +1598,17 @@ const MD_ACTIONS = {
   bold: () => toggleWrap('**', '**', 'bold'),
   italic: () => toggleWrap('*', '*', 'italic'),
   strike: () => toggleWrap('~~', '~~', 'strike'),
+  underline: () => toggleWrap('++', '++', 'underline'),
+  highlight: () => toggleWrap('==', '==', 'highlight'),
+  sup: () => toggleWrap('^', '^', '2'),
+  sub: () => toggleWrap('~', '~', '2'),
   code: () => toggleWrap('`', '`', 'code'),
   ul: () => prefixLines('- '),
   ol: () => prefixLines('1. ', true),
   quote: () => prefixLines('> '),
+  tasks: () => prefixLines('- [ ] ', false, /^[-*+]\s+\[[ xX]\]\s+/),
   link: () => insertLink(),
+  image: () => insertImage(),
   table: () => insertTable(),
   codeblock: () => insertBlock('```\ncode\n```'),
   rule: () => insertBlock('---'),
@@ -1627,7 +1650,7 @@ const SIZE_KEY = 'tp.size';
 const FONT_PINNED = 'tp.fontPinned';
 
 function currentFont() {
-  return $('fontFamily').value || localStorage.getItem(FONT_KEY) || 'DejaVuSansMono';
+  return $('fontFamily')?.dataset.font || localStorage.getItem(FONT_KEY) || 'DejaVuSansMono';
 }
 
 /* A theme sets the page as well as the screen: its manifest carries the print
@@ -1787,8 +1810,11 @@ const withThemeStyle = (options) => ({ ...(options || {}), ...themeStyle() });
 
 /* keep the Settings pane and the compose toolbar showing the same thing */
 function setPrintFont(font, size, { pin = false } = {}) {
-  [['fontFamily', font], ['fontQuick', font],
-   ['fontSize', size], ['sizeQuick', size]].forEach(([id, value]) => {
+  if (font) {
+    setFontField('fontFamily', font);
+    setFontField('fontQuick', font);
+  }
+  [['fontSize', size], ['sizeQuick', size]].forEach(([id, value]) => {
     if ($(id) && value !== undefined && value !== null) $(id).value = value;
   });
   if (font) localStorage.setItem(FONT_KEY, font);
@@ -1809,16 +1835,17 @@ function applyThemePrintDefaults(theme) {
 
 let fontList = [];
 
-async function loadFonts() {
-  const data = await api('/api/fonts');
+const FONT_FIELDS = ['fontFamily', 'fontQuick', 'presetFont', 'todoFont'];
+
+/* Read fresh from the server at launch and on Rescan, so a font installed
+ * while this was closed is in the list the next time it opens. */
+async function loadFonts(force = false) {
+  const data = await api(`/api/fonts${force ? '?refresh=1' : ''}`);
   fontList = data.fonts || [];
 
-  ['fontFamily', 'fontQuick', 'presetFont', 'todoFont'].forEach((id) => {
-    const select = $(id);
-    if (!select) return;
-    select.innerHTML = '';
-    fontList.forEach((name) => select.append(new Option(name, name)));
-  });
+  if ($('fontCount')) {
+    $('fontCount').textContent = `${fontList.length} families installed`;
+  }
 
   const theme = document.documentElement.dataset.theme;
   const pinned = localStorage.getItem(FONT_PINNED) === '1';
@@ -1835,13 +1862,258 @@ async function loadFonts() {
   }
 }
 
+/* ------------------------------------------------------- the font dropdown */
+/* A dropdown, as before, with a search box at the top of it: nine hundred
+ * families is too many to scroll past but the control is still a control. One
+ * panel serves every font field, opened against whichever was clicked, because
+ * four copies of a nine hundred row list is three too many.
+ *
+ * The browser's own datalist was the obvious shortcut and the wrong one: it
+ * cannot be styled, it draws its own clear button and caret, and it places
+ * itself wherever it likes. */
+const FONT_LIMIT = 300;       // rows rendered at once; the search is the rest
+
+let fontOpenFor = null;       // the field the panel is open against
+let fontPicked = null;        // what to call when a name is chosen
+let fontActive = -1;          // the row the keyboard is on
+
+function fontMatches(query) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return fontList;
+  // names that start with what was typed first, then names that contain it:
+  // typing "ar" should offer Arial before AmiriQuranColored
+  const starts = [];
+  const contains = [];
+  fontList.forEach((name) => {
+    const place = name.toLowerCase().indexOf(needle);
+    if (place === 0) starts.push(name);
+    else if (place > 0) contains.push(name);
+  });
+  return starts.concat(contains);
+}
+
+function renderFontList(query) {
+  const list = $('fontList');
+  const foot = $('fontFoot');
+  if (!list) return;
+
+  const matches = fontMatches(query);
+  const shown = matches.slice(0, FONT_LIMIT);
+  const current = fontOpenFor ? fontOpenFor.dataset.font : '';
+  list.innerHTML = '';
+
+  const fragment = document.createDocumentFragment();
+  shown.forEach((name, index) => {
+    const row = document.createElement('li');
+    row.className = 'combo-opt';
+    row.id = `fontOpt${index}`;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(name === current));
+    row.textContent = name;
+    row.dataset.font = name;
+    fragment.append(row);
+  });
+  list.append(fragment);
+
+  if (!shown.length) {
+    const empty = document.createElement('li');
+    empty.className = 'combo-empty';
+    empty.textContent = 'No font by that name';
+    list.append(empty);
+  }
+
+  if (foot) {
+    foot.hidden = matches.length <= FONT_LIMIT;
+    foot.textContent = `${matches.length} families, showing ${shown.length}. Keep typing to narrow it.`;
+  }
+
+  fontActive = shown.indexOf(current);
+  if (fontActive < 0 && shown.length) fontActive = 0;
+  highlightFont({ scroll: true });
+}
+
+function highlightFont({ scroll = false } = {}) {
+  const list = $('fontList');
+  if (!list) return;
+  Array.from(list.children).forEach((row, index) => {
+    row.classList.toggle('active', index === fontActive);
+  });
+  const row = list.children[fontActive];
+  if (row && scroll) row.scrollIntoView({ block: 'nearest' });
+  $('fontSearch')?.setAttribute('aria-activedescendant', row ? row.id : '');
+}
+
+function openFontPopup(field, onPick) {
+  const popup = $('fontPopup');
+  const search = $('fontSearch');
+  if (!popup || !search) return;
+
+  fontOpenFor = field;
+  fontPicked = onPick;
+  field.setAttribute('aria-expanded', 'true');
+  popup.hidden = false;
+
+  // placed against the field it belongs to, and flipped above it when there is
+  // more room up than down, so the list is never half off the screen
+  const box = field.getBoundingClientRect();
+  const width = Math.max(box.width, 240);
+  const below = window.innerHeight - box.bottom;
+  popup.style.width = `${width}px`;
+  popup.style.left = `${Math.min(box.left, window.innerWidth - width - 8)}px`;
+  popup.style.maxHeight = `${Math.max(180, Math.min(340, Math.max(below, box.top) - 16))}px`;
+  if (below < 220 && box.top > below) {
+    popup.style.top = '';
+    popup.style.bottom = `${window.innerHeight - box.top + 6}px`;
+  } else {
+    popup.style.bottom = '';
+    popup.style.top = `${box.bottom + 6}px`;
+  }
+
+  search.value = '';
+  renderFontList('');
+  search.focus();
+}
+
+function closeFontPopup() {
+  const popup = $('fontPopup');
+  if (!popup || popup.hidden) return;
+  popup.hidden = true;
+  fontOpenFor?.setAttribute('aria-expanded', 'false');
+  fontOpenFor?.focus();
+  fontOpenFor = null;
+  fontPicked = null;
+}
+
+/* What the field shows is what will be printed, so it is set from the list
+ * rather than from anything typed: there is no half-typed state to validate. */
+function setFontField(id, name) {
+  const field = $(id);
+  if (!field || !name) return;
+  field.dataset.font = name;
+  field.textContent = name;
+  field.title = name;
+}
+
+function chooseFont(name) {
+  if (!name || !fontOpenFor) return;
+  const field = fontOpenFor;
+  const pick = fontPicked;
+  setFontField(field.id, name);
+  closeFontPopup();
+  pick?.(name);
+}
+
+function initFontField(id, onPick) {
+  const field = $(id);
+  if (!field) return;
+  field.addEventListener('click', () => {
+    if (fontOpenFor === field) closeFontPopup();
+    else openFontPopup(field, onPick);
+  });
+
+  // Closed but focused, it answers the keyboard the way a select does: the
+  // arrows step through the fonts and the page follows each one, so a face
+  // can be tried on the document without opening anything. Typing a letter
+  // opens the list with that letter already searched for.
+  field.addEventListener('keydown', (event) => {
+    if (fontOpenFor === field || event.ctrlKey || event.metaKey) return;
+    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 10, PageUp: -10 }[event.key];
+    if (step && !event.altKey && fontList.length) {
+      event.preventDefault();
+      const at = fontList.indexOf(field.dataset.font);
+      const next = at < 0 ? 0 : Math.max(0, Math.min(fontList.length - 1, at + step));
+      if (fontList[next] === field.dataset.font) return;
+      setFontField(id, fontList[next]);
+      onPick?.(fontList[next]);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const edge = event.key === 'Home' ? fontList[0] : fontList[fontList.length - 1];
+      if (!edge || edge === field.dataset.font) return;
+      setFontField(id, edge);
+      onPick?.(edge);
+    } else if (event.altKey && event.key === 'ArrowDown') {
+      event.preventDefault();
+      openFontPopup(field, onPick);
+    } else if (event.key.length === 1 && !event.altKey && event.key.trim()) {
+      event.preventDefault();
+      openFontPopup(field, onPick);
+      $('fontSearch').value = event.key;
+      renderFontList(event.key);
+    }
+  });
+}
+
+function initFontPopup() {
+  const popup = $('fontPopup');
+  const search = $('fontSearch');
+  const list = $('fontList');
+  if (!popup || !search || !list) return;
+
+  search.addEventListener('input', () => renderFontList(search.value));
+
+  search.addEventListener('keydown', (event) => {
+    const rows = Array.from(list.children).filter((row) => row.dataset.font);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!rows.length) return;
+      fontActive = (fontActive + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+      highlightFont({ scroll: true });
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      chooseFont(rows[fontActive]?.dataset.font);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeFontPopup();
+    }
+  });
+
+  // mousedown rather than click: the field would otherwise take focus back and
+  // close the panel before the row it was over could report being chosen
+  list.addEventListener('mousedown', (event) => {
+    const row = event.target.closest('.combo-opt');
+    if (!row) return;
+    event.preventDefault();
+    chooseFont(row.dataset.font);
+  });
+
+  document.addEventListener('mousedown', (event) => {
+    if (popup.hidden) return;
+    if (popup.contains(event.target) || event.target === fontOpenFor) return;
+    closeFontPopup();
+  });
+  window.addEventListener('resize', closeFontPopup);
+  // the page scrolling away from the field closes it; the list scrolling
+  // through its own fonts must not, and a capturing listener hears both
+  window.addEventListener('scroll', (event) => {
+    if ($('fontPopup')?.contains(event.target)) return;
+    closeFontPopup();
+  }, true);
+}
+
 function initFontControls() {
+  initFontField('presetFont', () => refreshPresetPreview());
+
   const pinAndRender = (font, size) => setPrintFont(font, size, { pin: true });
 
-  $('fontFamily').addEventListener('change', () =>
-    pinAndRender($('fontFamily').value, undefined));
-  $('fontQuick').addEventListener('change', () =>
-    pinAndRender($('fontQuick').value, undefined));
+  initFontField('fontFamily', (font) => pinAndRender(font, undefined));
+  initFontField('fontQuick', (font) => pinAndRender(font, undefined));
+
+  // the list is read again on demand, for a font installed while this was open
+  $('fontRescanBtn')?.addEventListener('click', async () => {
+    const button = $('fontRescanBtn');
+    button.disabled = true;
+    const was = currentFont();
+    try {
+      await loadFonts(true);
+      if (fontList.includes(was)) setPrintFont(was, undefined);
+      toast(`${fontList.length} font families`);
+    } catch (error) {
+      toast(`Could not read the fonts: ${error.message}`, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   $('fontSize').addEventListener('change', () =>
     pinAndRender(undefined, Number($('fontSize').value)));
   $('sizeQuick').addEventListener('change', () =>
@@ -1952,8 +2224,8 @@ function initTodoDirection() {
     $('todoSize').value = size;
     refreshTodoPreview();
   });
-  $('todoFont')?.addEventListener('change', () => {
-    localStorage.setItem(TODO_FONT_KEY, $('todoFont').value);
+  initFontField('todoFont', (font) => {
+    localStorage.setItem(TODO_FONT_KEY, font);
     refreshTodoPreview();
   });
   $('todoTypeReset')?.addEventListener('click', () => {
@@ -1976,7 +2248,7 @@ function initTodoDirection() {
 function showTodoType() {
   const font = $('todoFont');
   const size = $('todoSize');
-  if (font) font.value = localStorage.getItem(TODO_FONT_KEY) || currentFont();
+  if (font) setFontField('todoFont', localStorage.getItem(TODO_FONT_KEY) || currentFont());
   if (size) {
     size.value = Number(localStorage.getItem(TODO_SIZE_KEY))
       || Number($('fontSize')?.value) || 24;
@@ -3206,7 +3478,7 @@ function openPresetEditor(preset) {
   $('presetName').value = preset?.name || '';
   $('presetDesc').value = preset?.description || '';
   $('presetText').value = preset?.text ?? editor().value;
-  $('presetFont').value = preset?.options?.font || currentFont();
+  setFontField('presetFont', preset?.options?.font || currentFont());
   $('presetSize').value = preset?.options?.size || $('fontSize').value || 24;
   $('presetDarkness').value = preset?.options?.darkness || $('darkness').value || 1;
   $('presetDirection').value = preset?.options?.orientation || currentDirection();
@@ -3235,7 +3507,7 @@ function syncPresetDirection() {
 
 function presetEditorOptions() {
   return {
-    font: $('presetFont').value || currentFont(),
+    font: $('presetFont').dataset.font || currentFont(),
     size: Number($('presetSize').value) || 24,
     darkness: Number($('presetDarkness').value) || 1,
     orientation: $('presetDirection')?.value || 'portrait',
@@ -3313,7 +3585,7 @@ function initPresetEditor() {
     $('presetName').select();
   });
 
-  ['presetText', 'presetFont', 'presetSize', 'presetDarkness'].forEach((id) => {
+  ['presetText', 'presetSize', 'presetDarkness'].forEach((id) => {
     $(id).addEventListener('input', () => debounce('preset', refreshPresetPreview));
   });
 
@@ -3756,6 +4028,7 @@ function initSettings() {
   initNetworkSwitch();
   $('statusBtn')?.addEventListener('click', checkPrinterStatus);
   initWirePane();
+  initFontPopup();
   // the sheet is scaled to the panel, so the ruler under it has to be redrawn
   // when the panel changes size
   window.addEventListener('resize', () => refreshRulers());
@@ -3814,7 +4087,7 @@ async function boot() {
 
   try {
     await refreshState();
-    await Promise.all([loadFonts(), loadDitherModes(), loadPresets(), loadTodos(),
+    await Promise.all([loadFonts(true), loadDitherModes(), loadPresets(), loadTodos(),
                        loadTemplates(), loadSavedLabels()]);
     // the list's font field is filled from the same list as everything else,
     // so it can only be set once that list has arrived

@@ -7,7 +7,7 @@
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Tuple
 
 from pathlib import Path
@@ -72,13 +72,6 @@ DEFAULT_PRINT_STYLE = {
 }
 
 _INLINE_CODE = re.compile(r"`([^`]+)`")
-# Emphasis must not fire mid-word. Markdown allows intraword "*", but on a
-# printer the input is as often plain text as markup, and silently italicising
-# the 3 in "2*3*4" or the middle of "some_var_name" corrupts what was typed.
-# Requiring a non-word character on both sides keeps prose literal.
-_BOLD = re.compile(r"(?<!\w)(?:\*\*|__)(.+?)(?:\*\*|__)(?!\w)")
-_ITALIC = re.compile(r"(?<![\w\*_])(?:\*|_)([^\*_\s][^\*_]*?)(?:\*|_)(?![\w\*_])")
-_STRIKE = re.compile(r"~~(.+?)~~")
 # Text pasted from a web page, particularly an Arabic or Hebrew one, carries
 # invisible direction marks: left to right and right to left marks, isolates,
 # embeddings. They are characters like any other as far as a regular expression
@@ -176,6 +169,7 @@ class Span:
     italic: bool = False
     mono: bool = False
     underline: bool = False
+    strike: bool = False        # a rule through the middle of the letters
     highlight: bool = False     # printed as white out of black, which a head does well
     raise_: int = 0             # +1 superscript, -1 subscript
 
@@ -214,7 +208,8 @@ class MarkdownRenderer:
         self.style = {**DEFAULT_PRINT_STYLE, **(style or {})}
         self.margin = int(self.style["margin"]) if margin == 6 else margin
         self._fm = get_font_manager()
-        self._italic_cache = {}
+        self._style_cache = {}
+        self._x_heights = {}
         # where /images/<name> references resolve to; without one an image
         # falls back to its alt text, which is what the desktop app wants
         self.image_root = Path(image_root) if image_root else None
@@ -244,47 +239,64 @@ class MarkdownRenderer:
     # -------------------------------------------------------------------------
     # fonts
     # -------------------------------------------------------------------------
-    ITALIC_FALLBACK = "DejaVuSansMono"   # ships an oblique, which many mono faces do not
+    # Bold and italic come from the family's own files when it has them. When
+    # it does not, the face it does have is thickened or slanted here, so the
+    # page stays in the typeface that was chosen: swapping in another family's
+    # italic changes the letters mid sentence, and handing back regular for
+    # bold prints the emphasis as if it were not there.
+    _STYLE_NAMES = {(False, False): "Regular", (True, False): "Bold",
+                    (False, True): "Italic", (True, True): "BoldItalic"}
+    SLANT = 0.21          # the shear of a synthetic italic, about 12 degrees
 
-    _ITALIC_STYLES = ("BoldItalic", "BoldOblique", "Italic", "Oblique")
-
-    def _slanted_path(self, family: str, bold: bool):
-        """A genuinely slanted face for this family, or None.
-
-        The font manager matches style names loosely and will happily hand back
-        the Bold file when asked for an Italic, so the file name is checked
-        before the result is believed.
-        """
-        styles = self._ITALIC_STYLES if bold else self._ITALIC_STYLES[2:]
-        for style in styles:
-            path = self._fm.get_font_path(family, style, fallback=False)
-            if path and re.search(r"italic|oblique", Path(path).name, re.I):
-                return path
+    def _family_key(self, family: str) -> Optional[str]:
+        """The family as the font manager indexed it, or None if it has no files."""
+        for candidate in (family, family.replace(" ", "")):
+            if self._fm.get_family_styles(candidate):
+                return candidate
         return None
 
     def _font(self, size: int, bold: bool = False, italic: bool = False, mono: bool = False):
         family = "DejaVu Sans Mono" if mono else self.font_family
+        key = (family, size, bold, italic)
+        if key not in self._style_cache:
+            self._style_cache[key] = self._styled_font(family, size, bold, italic)
+        return self._style_cache[key]
 
-        if italic:
-            key = (family, size, bold)
-            if key not in self._italic_cache:
-                # borrowing an oblique from another mono face keeps a quote
-                # looking like a quote; substituting regular, which is what the
-                # font manager does on its own, silently drops the distinction
-                path = self._slanted_path(family, bold) or self._slanted_path(
-                    self.ITALIC_FALLBACK, bold)
-                try:
-                    self._italic_cache[key] = ImageFont.truetype(path, size) if path else None
-                except OSError:
-                    self._italic_cache[key] = None
-            slanted = self._italic_cache[key]
-            if slanted is not None:
-                return slanted
+    def _styled_font(self, family: str, size: int, bold: bool, italic: bool):
+        known = self._family_key(family)
+        if known is None:
+            # not an installed family at all; the font manager's own fallback
+            # is the best there is, and there is no face to synthesise from
+            return (self._fm.load_font(family, size, bold=bold, italic=italic)
+                    or self._fm.load_font(family, size))
 
-        font = self._fm.load_font(family, size, bold=bold, italic=italic)
-        if font is None and (bold or italic):
-            font = self._fm.load_font(family, size)
+        # the nearest real face: for bold italic a real italic is kept over a
+        # real bold, since italic letterforms differ and weight is easy to add
+        wanted = [(bold, italic)]
+        if bold and italic:
+            wanted += [(False, True), (True, False)]
+        wanted.append((False, False))
+
+        styles = set(self._fm.get_family_styles(known))
+        for real_bold, real_italic in wanted:
+            if self._STYLE_NAMES[(real_bold, real_italic)] in styles:
+                break
+        else:
+            real_bold, real_italic = bold, italic   # whatever file it has, as is
+        path = self._fm.get_font_path(
+            known, self._STYLE_NAMES[(real_bold, real_italic)], fallback=False)
+        try:
+            font = ImageFont.truetype(path, size)
+        except (OSError, TypeError):
+            return self._fm.load_font(family, size)
+        font.faux_bold = bold and not real_bold
+        font.faux_slant = italic and not real_italic
         return font
+
+    @staticmethod
+    def _embolden(font) -> int:
+        """Extra dots of weight for a synthetic bold: two at body size."""
+        return max(1, round(getattr(font, "size", 24) / 16))
 
     def _line_height(self, font) -> int:
         try:
@@ -484,42 +496,54 @@ class MarkdownRenderer:
         # with its path.
         text = _IMAGE.sub(lambda m: _image_label(m.group(1)), text)
         text = _LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
-        text = _STRIKE.sub(lambda m: "".join(c + "̶" for c in m.group(1)), text)
+        return self._inline_spans(text, {}) or [Span(text)]
 
+    # Emphasis must not fire mid-word. Markdown allows intraword "*", but on a
+    # printer the input is as often plain text as markup, and silently italicising
+    # the 3 in "2*3*4" or the middle of "some_var_name" corrupts what was typed.
+    # Requiring a non-word character on both sides keeps prose literal.
+    #
+    # Markers nest, so a run is parsed again inside its markers with their style
+    # added: "**bold ++under++**" is bold throughout and underlined at the end,
+    # rather than bold with the plus signs printed. Code is the one exception,
+    # since everything inside backticks is meant literally.
+    _INLINE = re.compile(
+        r"(?P<code>`[^`]+`)|(?P<both>(?<!\w)\*\*\*.+?\*\*\*(?!\w))|"
+        r"(?P<bold>(?<!\w)(?:\*\*|__).+?(?:\*\*|__)(?!\w))|"
+        r"(?P<strike>~~.+?~~)|"
+        r"(?P<mark>==[^=]+==)|(?P<under>\+\+[^+]+\+\+)|"
+        r"(?P<sup>\^[^\^\s]+\^)|(?P<sub>(?<!~)~[^~\s]+~(?!~))|"
+        r"(?P<italic>(?<![\w\*_])[\*_][^\*_\s][^\*_]*?[\*_](?![\w\*_]))"
+    )
+    # how many marker characters each side, and the style they add
+    _INLINE_STYLE = {
+        "both": (3, {"bold": True, "italic": True}),
+        "bold": (2, {"bold": True}),
+        "strike": (2, {"strike": True}),
+        "mark": (2, {"highlight": True}),
+        "under": (2, {"underline": True}),
+        "sup": (1, {"raise_": 1}),
+        "sub": (1, {"raise_": -1}),
+        "italic": (1, {"italic": True}),
+    }
+
+    def _inline_spans(self, text: str, style: dict) -> List[Span]:
         spans: List[Span] = []
-        pattern = re.compile(
-            r"(?P<code>`[^`]+`)|(?P<both>(?<!\w)\*\*\*.+?\*\*\*(?!\w))|"
-            r"(?P<bold>(?<!\w)(?:\*\*|__).+?(?:\*\*|__)(?!\w))|"
-            r"(?P<mark>==[^=]+==)|(?P<under>\+\+[^+]+\+\+)|"
-            r"(?P<sup>\^[^\^\s]+\^)|(?P<sub>(?<!~)~[^~\s]+~(?!~))|"
-            r"(?P<italic>(?<![\w\*_])[\*_][^\*_\s][^\*_]*?[\*_](?![\w\*_]))"
-        )
-
         position = 0
-        for match in pattern.finditer(text):
+        for match in self._INLINE.finditer(text):
             if match.start() > position:
-                spans.append(Span(text[position:match.start()]))
-            if match.group("code"):
-                spans.append(Span(match.group("code")[1:-1], mono=True))
-            elif match.group("both"):
-                spans.append(Span(match.group("both")[3:-3], bold=True, italic=True))
-            elif match.group("mark"):
-                spans.append(Span(match.group("mark")[2:-2], highlight=True))
-            elif match.group("under"):
-                spans.append(Span(match.group("under")[2:-2], underline=True))
-            elif match.group("sup"):
-                spans.append(Span(match.group("sup")[1:-1], raise_=1))
-            elif match.group("sub"):
-                spans.append(Span(match.group("sub")[1:-1], raise_=-1))
-            elif match.group("bold"):
-                spans.append(Span(_BOLD.sub(r"\1", match.group("bold")), bold=True))
+                spans.append(Span(text[position:match.start()], **style))
+            kind = match.lastgroup
+            body = match.group(kind)
+            if kind == "code":
+                spans.append(Span(body[1:-1], **{**style, "mono": True}))
             else:
-                spans.append(Span(_ITALIC.sub(r"\1", match.group("italic")), italic=True))
+                trim, added = self._INLINE_STYLE[kind]
+                spans.extend(self._inline_spans(body[trim:-trim], {**style, **added}))
             position = match.end()
-
         if position < len(text):
-            spans.append(Span(text[position:]))
-        return spans or [Span(text)]
+            spans.append(Span(text[position:], **style))
+        return spans
 
     # -------------------------------------------------------------------------
     # layout
@@ -658,7 +682,7 @@ class MarkdownRenderer:
         return segments
 
     def _text_width(self, word: str, font, size: int) -> float:
-        total = 0.0
+        total = float(self._embolden(font)) if getattr(font, "faux_bold", False) else 0.0
         for text, face in self._segments(word, font):
             try:
                 total += face.getlength(text)
@@ -854,15 +878,9 @@ class MarkdownRenderer:
             return str(self.style["bullet"]) or BULLETS[0]
         return BULLETS[min(level, 2)]
 
-    @staticmethod
-    def _line_width(line) -> int:
-        total = 0
-        for _span, word, font in line:
-            try:
-                total += font.getlength(word)
-            except (AttributeError, OSError):
-                total += len(word) * 8
-        return int(total)
+    def _line_width(self, line) -> int:
+        return int(sum(self._text_width(word, font, self.font_size)
+                       for _span, word, font in line))
 
     def _draw_rule(self, draw, x0: int, x1: int, y: int, weight: int) -> int:
         """Draw the rule the theme asked for and return the height it used."""
@@ -886,7 +904,7 @@ class MarkdownRenderer:
 
         spans = block.spans
         if self.style["heading_case"] == "upper":
-            spans = [Span(s.text.upper(), s.bold, s.italic, s.mono) for s in spans]
+            spans = [replace(s, text=s.text.upper()) for s in spans]
 
         banner = bool(self.style["heading_banner"]) and block.level == 1
         pad = 5 if banner else 0
@@ -931,7 +949,12 @@ class MarkdownRenderer:
                    fill: str = "black") -> int:
         x = x_start
         height = 0
-        for span, word, font in line:
+        # a space the line happens to end on is not underlined or struck: the
+        # rule would run on past the last letter into nothing
+        last = len(line) - 1
+        while last >= 0 and line[last][1].isspace():
+            last -= 1
+        for index, (span, word, font) in enumerate(line):
             if force_bold or force_italic:
                 font = self._font(size, span.bold or force_bold,
                                   span.italic or force_italic, span.mono)
@@ -940,32 +963,34 @@ class MarkdownRenderer:
 
             # a raised or lowered run is set smaller and shifted, which is all
             # a one bit page can do to say "superscript"
+            offset = 0
             if span.raise_:
+                base = font
                 font = self._font(max(8, int(size * 0.7)), span.bold or force_bold,
                                   span.italic or force_italic, span.mono) or font
+                offset = self._raise_offset(base, font, span.raise_, size)
 
             word_width = self._text_width(word, font, size)
 
             line_height = self._line_height(font)
-            offset = 0
-            if span.raise_ > 0:
-                offset = -int(size * 0.18)
-            elif span.raise_ < 0:
-                offset = int(size * 0.20)
 
             if span.highlight:
                 # reverse video: the head is very good at solid black, and this
                 # is the only "colour" a highlight can have on paper
+                # the face's own height, not the line's: the gap under a line
+                # belongs to the line spacing, and a box filling it looks
+                # like a misprint
                 draw.rectangle(
-                    [x - 1, y, x + word_width + 1, y + line_height - 2], fill="black"
+                    [x - 1, y, x + word_width + 1, y + min(line_height, sum(font.getmetrics())) - 1],
+                    fill="black",
                 )
                 self._paint(draw, x, y + offset, word, font, "white", size)
             else:
                 self._paint(draw, x, y + offset, word, font, fill, size)
 
-            if span.underline:
-                baseline = y + int(line_height * 0.82)
-                draw.rectangle([x, baseline, x + word_width, baseline + 1], fill=fill)
+            if index <= last:
+                self._decorate(draw, span, x, y + offset, word_width, font,
+                               "white" if span.highlight else fill)
 
             x += word_width
             height = max(height, self._line_height(font) if not span.raise_
@@ -973,13 +998,92 @@ class MarkdownRenderer:
         return y + (height or int(size * 1.2))
 
     def _paint(self, draw, x: float, y: int, word: str, font, fill: str, size: int):
-        """Draw a word, borrowing a face for any character this one lacks."""
+        """Draw a word, borrowing a face for any character this one lacks.
+
+        A borrowed glyph takes on the synthetic weight or slant of the face it
+        stands in for, so one symbol does not stand upright in a slanted word.
+        """
+        bold = getattr(font, "faux_bold", False)
+        slant = getattr(font, "faux_slant", False)
         for text, face in self._segments(word, font):
-            draw.text((x, y), text, font=face, fill=fill)
+            self._draw_text(draw, x, y, text, face, fill, bold, slant)
             try:
                 x += face.getlength(text)
             except (AttributeError, OSError):
                 x += size * len(text) * 0.6
+
+    def _draw_text(self, draw, x: float, y: int, text: str, face, fill: str,
+                   bold: bool = False, slant: bool = False) -> None:
+        weight = self._embolden(face) if bold else 0
+        if not slant:
+            # synthetic bold is the old typewriter trick: strike it again a dot
+            # to the right, which a thermal head renders as a heavier stroke
+            for shift in range(weight + 1):
+                draw.text((x + shift, y), text, font=face, fill=fill)
+            return
+
+        # synthetic italic: set the word upright on its own, shear it about the
+        # baseline so the tops lean right and the descenders left, and stamp it
+        ascent, descent = face.getmetrics()
+        lean_left = int(self.SLANT * descent) + 2
+        lean_right = int(self.SLANT * ascent) + 2
+        mask = Image.new("L", (int(face.getlength(text)) + weight + lean_left + lean_right,
+                               ascent + descent))
+        pen = ImageDraw.Draw(mask)
+        for shift in range(weight + 1):
+            pen.text((lean_left + shift, 0), text, font=face, fill=255)
+        mask = mask.transform(mask.size, Image.AFFINE,
+                              (1, self.SLANT, -self.SLANT * ascent, 0, 1, 0),
+                              resample=Image.BICUBIC)
+        draw.bitmap((round(x) - lean_left, y), mask, fill=fill)
+
+    @staticmethod
+    def _raise_offset(base, small, direction: int, size: int) -> int:
+        """How far down to set a raised or lowered run's top, from the line's top.
+
+        Measured baseline to baseline: the smaller face has a shorter ascent, so
+        its top already sits lower, and a fixed nudge would leave a subscript
+        floating above the line it belongs under.
+        """
+        try:
+            drop = base.getmetrics()[0] - small.getmetrics()[0]
+        except (AttributeError, OSError):
+            drop = int(size * 0.25)
+        return drop + (int(size * 0.15) if direction < 0 else -int(size * 0.38))
+
+    def _x_height(self, font) -> int:
+        key = (getattr(font, "path", None), getattr(font, "size", 0))
+        if key not in self._x_heights:
+            try:
+                self._x_heights[key] = max(1, -font.getbbox("x", anchor="ls")[1])
+            except (AttributeError, OSError, ValueError):
+                self._x_heights[key] = max(1, int(getattr(font, "size", 24) * 0.5))
+        return self._x_heights[key]
+
+    def _decorate(self, draw, span: Span, x: float, y: int, word_width: float,
+                  font, fill: str) -> None:
+        """Underline and strike through a word set with its top at y.
+
+        Both are placed from the face's own metrics rather than from the line
+        height, so they stay on the baseline and through the letters whatever
+        the line spacing is, and they are thick enough to survive the head.
+        """
+        if not (span.underline or span.strike):
+            return
+        try:
+            ascent, descent = font.getmetrics()
+        except (AttributeError, OSError):
+            ascent, descent = int(self.font_size * 0.8), int(self.font_size * 0.2)
+        thick = max(1, round(getattr(font, "size", self.font_size) / 14))
+        x0, x1 = int(x), int(x + word_width) - 1
+        if x1 < x0:
+            return
+        if span.underline:
+            top = y + ascent + max(1, descent // 3)
+            draw.rectangle([x0, top, x1, top + thick - 1], fill=fill)
+        if span.strike:
+            top = y + ascent - self._x_height(font) // 2 - thick // 2
+            draw.rectangle([x0, top, x1, top + thick - 1], fill=fill)
 
     def _draw_image(self, sheet, block: Block, y: int, left: int, width: int) -> int:
         """Place a picture, scaled to the paper and reduced to ink or nothing.
@@ -1056,7 +1160,7 @@ class MarkdownRenderer:
         """A cell's text as drawable pieces, one per word, with its own font.
 
         A cell is text like any other, so everything the body understands has
-        to work here too: bold, italic, code, highlight, underline and raised
+        to work here too: bold, italic, code, highlight, underline, strike and raised
         or lowered runs. The span travels with the piece so the drawing code
         can decorate it the same way it decorates a paragraph.
         """
@@ -1068,10 +1172,7 @@ class MarkdownRenderer:
             for word in re.split(r"(\s+)", span.text):
                 if not word:
                     continue
-                try:
-                    piece_width = font.getlength(word)
-                except (AttributeError, OSError):
-                    piece_width = piece_size * len(word) * 0.6
+                piece_width = self._text_width(word, font, piece_size)
                 pieces.append((word, font, piece_width, span))
         return pieces
 
@@ -1184,12 +1285,11 @@ class MarkdownRenderer:
                     else:
                         cursor = x + pad
                     line_top = y + pad + line_index * pitch
-                    for text, piece_font, piece_width, span in line:
+                    for piece_index, (text, piece_font, piece_width, span) in enumerate(line):
                         offset = 0
-                        if span.raise_ > 0:
-                            offset = -int(size * 0.18)
-                        elif span.raise_ < 0:
-                            offset = int(size * 0.20)
+                        if span.raise_:
+                            offset = self._raise_offset(
+                                font, piece_font, span.raise_, size)
 
                         if span.highlight:
                             # reverse video, the only "colour" paper has
@@ -1198,16 +1298,12 @@ class MarkdownRenderer:
                                  cursor + piece_width + 1, line_top + pitch - 2],
                                 fill="black",
                             )
-                            draw.text((cursor, line_top + offset), text,
-                                      font=piece_font, fill="white")
-                        else:
-                            draw.text((cursor, line_top + offset), text,
-                                      font=piece_font, fill="black")
-
-                        if span.underline:
-                            baseline = line_top + int(pitch * 0.82)
-                            draw.rectangle([cursor, baseline,
-                                            cursor + piece_width, baseline + 1], fill="black")
+                        ink = "white" if span.highlight else "black"
+                        self._paint(draw, cursor, line_top + offset, text,
+                                    piece_font, ink, size)
+                        if not (text.isspace() and piece_index == len(line) - 1):
+                            self._decorate(draw, span, cursor, line_top + offset,
+                                           piece_width, piece_font, ink)
 
                         cursor += piece_width
                 x += widths[column]

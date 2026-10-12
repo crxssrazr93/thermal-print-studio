@@ -715,3 +715,52 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:3
 .wire-events .bad{color:var(--danger)}
 textarea.mono{font-family:var(--font-mono);font-size:12px}
 @media (max-width:720px){.wire-out{flex-direction:column}.wire-out img{width:100%}}
+
+/* ------------------------------------------------------- the font dropdown */
+/* The field is a dropdown like any other, and the list it opens carries a
+   search box, because there are nine hundred families on this machine and no
+   dropdown that long is usable without one. The panel is the app's own rather
+   than the browser's: a native list cannot be styled, draws its own caret and
+   clear button, and places itself where it likes. */
+.font-pick{
+  text-align:left;padding-right:26px;position:relative;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background-image:
+    linear-gradient(45deg,transparent 50%,var(--muted) 50%),
+    linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+  background-size:5px 5px,5px 5px;
+  background-position:right 13px top calc(50% - 1px),right 9px top calc(50% - 1px);
+  background-repeat:no-repeat;
+}
+.font-pick[aria-expanded="true"]{border-color:var(--accent)}
+/* a dropdown that shows four letters of a font name is a dropdown that has to
+   be opened to be read, so the field keeps room for the name it is showing */
+.font-pick.slim{width:auto;flex:none;min-width:118px;max-width:300px;padding-right:26px}
+.font-pick:not(.slim){width:100%}
+
+.combo{
+  position:fixed;z-index:70;display:flex;flex-direction:column;
+  background:var(--panel-2);border:var(--border) solid var(--line-strong);
+  border-radius:var(--radius-sm);box-shadow:0 12px 32px rgba(0,0,0,.45);
+  padding:7px;gap:6px;
+}
+.combo[hidden]{display:none}
+.combo-search{width:100%}
+.combo-list{
+  overscroll-behavior:contain; /* hitting the end must not scroll the page, which closes it */
+  list-style:none;margin:0;padding:0;overflow:auto;flex:1;min-height:0;
+  scrollbar-width:thin;
+}
+.combo-opt{
+  padding:6px 9px;border-radius:4px;font-size:13px;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.combo-opt:hover{background:var(--panel)}
+.combo-opt.active{background:var(--accent);color:var(--accent-ink)}
+.combo-opt[aria-selected="true"]{font-weight:600}
+.combo-opt[aria-selected="true"]::after{content:" ✓";color:var(--muted)}
+.combo-opt.active[aria-selected="true"]::after{color:var(--accent-ink)}
+.combo-empty{padding:8px 9px;color:var(--faint);font-size:12.5px;list-style:none}
+.combo-foot{margin:0;padding:2px 2px 0;color:var(--faint);font-size:11px;
+  border-top:var(--border) solid var(--line)}
+.combo-foot[hidden]{display:none}

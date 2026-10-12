@@ -779,12 +779,24 @@ def api_status(handler, match, body):
 
 @route("GET", "/api/fonts")
 def api_fonts(handler, match, body):
-    # a font installed while this is running should turn up in the list the
-    # next time the list is asked for, not the next time the app is restarted
+    """Every family installed on this machine, in alphabetical order.
+
+    A font installed while this is running should turn up in the list the next
+    time the list is asked for, not the next time the app is restarted, so the
+    font directories are stamped and rescanned when one has moved. `?refresh=1`
+    scans regardless, which is what the app asks for when it starts and what
+    the Rescan button sends: a stamp can miss an install that leaves every
+    directory mtime alone, and a list missing the font someone just installed
+    is the one failure nobody can work around.
+    """
     manager = get_font_manager()
-    manager.refresh_if_changed()
+    forced = (handler.query.get("refresh", ["0"])[0] or "").lower() not in ("", "0", "false")
+    if forced:
+        manager.refresh()
+    else:
+        manager.refresh_if_changed()
     families = manager.get_available_families() or [DEFAULT_FONT]
-    return 200, {"fonts": families, "default": DEFAULT_FONT}
+    return 200, {"fonts": families, "default": DEFAULT_FONT, "count": len(families)}
 
 
 @route("GET", "/api/themes")

@@ -73,6 +73,18 @@
       carrying it. The preview is the honest answer.</p>
   </dialog>
 
+  <!-- Every font field opens the same dropdown: a panel with a search box at
+       the top of it and the installed families under that. Nine hundred names
+       is too many to scroll, and the browser's own list cannot be styled or
+       placed, so this one belongs to the app. -->
+  <div class="combo" id="fontPopup" hidden>
+    <input class="control slim combo-search" id="fontSearch" type="text"
+           autocomplete="off" spellcheck="false" placeholder="Search fonts"
+           aria-label="Search fonts" aria-controls="fontList">
+    <ul class="combo-list" id="fontList" role="listbox" tabindex="-1"></ul>
+    <p class="combo-foot" id="fontFoot"></p>
+  </div>
+
   <!-- ------------------------------------------------ views -->
   <main class="main">
 
@@ -121,7 +133,8 @@
           </div>
           <span class="tool-sep" aria-hidden="true"></span>
           <label class="sr-only" for="fontQuick">Font</label>
-          <select id="fontQuick" class="control slim"></select>
+          <button id="fontQuick" class="control slim font-pick" type="button"
+                  aria-haspopup="listbox" aria-expanded="false" aria-label="Font"></button>
           <label class="sr-only" for="sizeQuick">Font size</label>
           <input id="sizeQuick" class="control slim narrow" type="number" min="8" max="72" step="1" value="24">
           <span class="tool-sep" aria-hidden="true"></span>
@@ -285,7 +298,8 @@
 
         <div class="paper-note" id="todoType">
           <label class="slider" for="todoFont">Font
-            <select id="todoFont" class="control slim"></select>
+            <button id="todoFont" class="control slim font-pick" type="button"
+                    aria-haspopup="listbox" aria-expanded="false"></button>
           </label>
           <label class="slider" for="todoSize">Size
             <input id="todoSize" class="control slim narrow" type="number"
@@ -509,7 +523,8 @@
 
         <div class="field">
           <label for="fontFamily">Paper font</label>
-          <select id="fontFamily" class="control"></select>
+          <button id="fontFamily" class="control font-pick" type="button"
+                  aria-haspopup="listbox" aria-expanded="false"></button>
           <p class="hint">The face the whole receipt is set in. Emphasis inside
             the document comes from the document, not from here.</p>
         </div>
@@ -897,7 +912,8 @@
         <div class="field-row">
           <div class="field">
             <label for="presetFont">Font</label>
-            <select id="presetFont" class="control"></select>
+            <button id="presetFont" class="control font-pick" type="button"
+                    aria-haspopup="listbox" aria-expanded="false"></button>
           </div>
           <div class="field">
             <label for="presetSize">Font size</label>

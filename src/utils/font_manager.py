@@ -111,11 +111,55 @@ class FontManager:
         """
         stamps = []
         for directory in self._font_dirs():
-            try:
-                stamps.append((directory, os.path.getmtime(directory)))
-            except OSError:
-                continue
-        return tuple(stamps)
+            # Fonts rarely land in the top of a font directory. A package drops
+            # them in a folder of their own, and a font manager makes one per
+            # family, so stat-ing only the top misses every install that
+            # matters: the directory above an untouched subfolder does not
+            # change. The walk is capped because a font directory is shallow
+            # and a surprise symlink into the home directory should not turn a
+            # list of fonts into a filesystem crawl.
+            for path in self._walk_dirs(directory):
+                try:
+                    stamps.append((path, os.path.getmtime(path)))
+                except OSError:
+                    continue
+        return tuple(sorted(stamps))
+
+    @staticmethod
+    def _walk_dirs(top: str, limit: int = 400) -> List[str]:
+        """The directory and the directories under it, up to a sane number."""
+        found = [top]
+        try:
+            for root, dirs, _ in os.walk(top, followlinks=False):
+                for name in dirs:
+                    found.append(os.path.join(root, name))
+                    if len(found) >= limit:
+                        return found
+        except OSError:
+            pass
+        return found
+
+    def refresh(self) -> int:
+        """Scan again whatever the stamps say, and return how many families.
+
+        The stamp is an optimisation, and an optimisation that is wrong once in
+        a while needs a way to be overruled: a font installed by a method that
+        leaves every directory mtime alone is still a font the user can see in
+        every other application. This is what the Rescan button asks for.
+        """
+        self._clear_caches()
+        self._scan_fonts()
+        self._dir_stamp_at_scan = self._dir_stamp()
+        return len(self.get_available_families())
+
+    def _clear_caches(self) -> None:
+        self._fonts.clear()
+        self._font_families.clear()
+        self._font_cache.clear()
+        self._fallback_font_cache.clear()
+        self._glyph_cache.clear()
+        self._probe_cache.clear()
+        self._notdef_cache.clear()
 
     def refresh_if_changed(self) -> bool:
         """Rescan if a font directory has changed since the last look."""
@@ -199,11 +243,18 @@ class FontManager:
         return family, style
 
     def get_available_families(self) -> List[str]:
+        """Every family, in the order a person reads a list of names.
+
+        Plain sorted() is ASCII order, which puts every capital before every
+        lower case letter: "Verdana" lands hundreds of entries above "arial",
+        and the list stops being alphabetical halfway down. Case is a property
+        of how a foundry wrote the name, not of where the name belongs.
+        """
         families = set()
         for family_list in self._font_families.values():
             for font_info in family_list:
                 families.add(font_info.family)
-        return sorted(families)
+        return sorted(families, key=lambda name: (name.casefold(), name))
 
     def get_family_styles(self, family: str) -> List[str]:
         family_lower = family.lower()

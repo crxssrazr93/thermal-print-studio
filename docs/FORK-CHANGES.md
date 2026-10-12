@@ -212,6 +212,35 @@ that draws what a stream would print and names every command in it, a raw
 listener on port 9100 so other software can print through this, and blank paper
 trimmed off the end of every job rather than only off banners.
 
+## 13. Type styles that keep the typeface
+
+Bold and italic use the family's own files when it has them. When it does not,
+the face it has is thickened (struck twice, a dot apart) or sheared about the
+baseline, so the page stays in the chosen typeface. Before this, a family with
+no italic printed its italics in DejaVu Sans Mono, and one with no bold printed
+bold identical to regular.
+
+Strikethrough is a real rule through the letters, placed from the face's
+x height. It used to be faked with combining characters, which broke spaces,
+quotes, tables and any font without those characters. Underline sits on the
+face's baseline rather than at a fraction of the line height, so it stays put
+when the line spacing changes.
+
+Inline styles nest: `**bold ++under++**` is bold throughout and underlined at
+the end, where before the plus signs printed. Subscript now drops below the
+baseline instead of floating above it, and an upper case heading keeps its
+underline, highlight and strike.
+
+In the editor, the markdown source mode buttons for underline, highlight,
+superscript, subscript, checklists and pictures work (they did nothing before),
+and a style applied to a word with its trailing space no longer glues the
+closing marker to the next word.
+
+The font control is a dropdown with a search box over every installed family,
+sorted A to Z and rescanned at launch. Closed and focused, the arrow keys step
+through the fonts and the page follows; typing a letter opens it searching for
+that letter.
+
 ## Known limitations
 
 - Render/process/print logic is still duplicated across the text, image,
